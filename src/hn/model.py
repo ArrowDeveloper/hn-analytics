@@ -55,11 +55,11 @@ class Comment(Base):
     )
     replies: Mapped[list["Comment"]] = relationship(back_populates="parent") 
 
+def init_db():
+    Base.metadata.create_all()
+
 if __name__ == "__main__":
-    with Session(engine) as session:
-        alice = User(name="testname12", karma_score=2500, created_at=datetime.now(timezone.utc))
-        session.add(alice)
-        session.commit()
+    init_db()
     
 
 
