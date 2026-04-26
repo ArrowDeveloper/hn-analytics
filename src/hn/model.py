@@ -28,7 +28,7 @@ class Story(Base):
 
     id : Mapped[int] = mapped_column(Integer, primary_key=True)
     title : Mapped[str] = mapped_column(String)
-    author_name : Mapped[str | None] = mapped_column(ForeignKey("users.name"))
+    author_name : Mapped[str | None] = mapped_column(ForeignKey("users.name"), index=True)
     url : Mapped[str | None] = mapped_column(String)
     score : Mapped[int] = mapped_column(Integer)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True)) 
@@ -41,9 +41,9 @@ class Comment(Base):
     __tablename__ = 'comments'
 
     id : Mapped[int] = mapped_column(Integer, primary_key=True)
-    author_name : Mapped[str | None] = mapped_column(ForeignKey("users.name"))
-    story_id : Mapped[int] = mapped_column(ForeignKey("stories.id"))
-    parent_comment : Mapped[int | None] = mapped_column(ForeignKey("comments.id"))
+    author_name : Mapped[str | None] = mapped_column(ForeignKey("users.name"), index=True)
+    story_id : Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    parent_comment : Mapped[int | None] = mapped_column(ForeignKey("comments.id"), index=True)
     html : Mapped[str | None] = mapped_column(String)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
