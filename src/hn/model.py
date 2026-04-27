@@ -56,7 +56,7 @@ class Comment(Base):
     replies: Mapped[list["Comment"]] = relationship(back_populates="parent") 
 
 def init_db():
-    Base.metadata.create_all()
+    Base.metadata.create_all(engine)
 
 if __name__ == "__main__":
     init_db()
