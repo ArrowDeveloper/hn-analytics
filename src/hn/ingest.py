@@ -20,51 +20,125 @@ def MakeSession():
 
 nsession = MakeSession()
 
-def get_data(n: int):
+def get_story_ids():
     r = nsession.get("https://hacker-news.firebaseio.com/v0/topstories.json")
     storyids = r.json()
-    firstnstories = storyids[:n]
-    datalist = []
 
-    for storyid in firstnstories:
-        story = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{storyid}.json")
-        storyjson = story.json()
+    return storyids
 
-        if storyjson is None or storyjson.get("deleted") or storyjson.get("dead"):
+def fetch_item(storyid):
+    item = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{storyid}.json")
+    itemjson = item.json()
+
+    if itemjson is None or itemjson.get("deleted") or itemjson.get("dead"):
+        return None
+
+    return itemjson
+
+def fetch_user_profile(name: str):
+    user = nsession.get(f"https://hacker-news.firebaseio.com/v0/user/{name}.json")
+    userjson = user.json()
+
+    if userjson is None:
+        return None
+
+    return userjson
+
+def get_or_fetchuser(name, users_by_name):
+    if name in users_by_name:
+        return users_by_name[name]
+    
+    profile = fetch_user_profile(name=name)
+    if profile is None:
+        return None
+    
+    user = User(
+        name=name,
+        karma_score=profile.get("karma", 0),
+        about=profile.get("about"),
+        created_at=datetime.fromtimestamp(profile.get("created"), tz=timezone.utc)
+    )
+    users_by_name[name] = user
+    return user
+
+def recursive_comments(kid_ids,story_id,parent_comment,users_by_name, comments):
+    for kid_id in kid_ids:
+        comment = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{kid_id}.json")
+        commentjson = comment.json()
+        if commentjson is None or commentjson.get("deleted") or commentjson.get("dead"):
+            continue
+
+        author = get_or_fetchuser(commentjson.get("by"), users_by_name=users_by_name)
+
+        if author is None:
+            continue
+
+        comment = Comment(
+            id=commentjson["id"],
+            author=author,
+            story_id=story_id,
+            parent=parent_comment,        
+            html=commentjson.get("text"),
+            created_at=datetime.fromtimestamp(commentjson["time"], tz=timezone.utc),
+        )
+        comments.append(comment)
+        if commentjson.get("kids"):
+            recursive_comments(
+                kid_ids=commentjson["kids"],
+                story_id=story_id,
+                parent_comment=comment,    
+                users_by_name=users_by_name,
+                comments=comments,
+            )
+
+def ingest(n:int):
+    users_by_name = {}
+    stories = []
+    comments = []
+
+    for storyid in get_story_ids()[:n]:
+        storyjson = fetch_item(storyid=storyid)
+        if storyjson is None:
             continue
         if storyjson.get("type") != "story":
             continue
+        if not storyjson.get("by"):
+            continue
 
-        author = storyjson.get("by")
-        authordata = nsession.get(f"https://hacker-news.firebaseio.com/v0/user/{author}.json")
-        authorjson = authordata.json()
+        author = get_or_fetchuser(storyjson["by"], users_by_name)
+        if author is None:
+            continue
 
-        about = authorjson.get("about")
-        karma_score = authorjson.get("karma")
-        author_created_at = authorjson.get("created")
+        story = Story(
+            id=storyjson["id"],
+            title=storyjson["title"],
+            author=author,
+            url=storyjson.get("url"),
+            score=storyjson.get("score", 0),
+            descendants_count=storyjson.get("descendants"),
+            created_at=datetime.fromtimestamp(storyjson["time"], tz=timezone.utc),
+        )
+        stories.append(story)
 
-        desecendants = storyjson.get("descendants")
-        kids = storyjson.get("kids")
-        score = storyjson.get("score")
-        title = storyjson.get("title")
-        story_created_at = storyjson.get("time")
-        text = storyjson.get("text")
-        url = storyjson.get("url")
+        if storyjson.get("kids"):
+            recursive_comments(
+                kid_ids=storyjson["kids"],
+                story_id=story.id,
+                parent_comment=None,        
+                users_by_name=users_by_name,
+                comments=comments,
+            )
 
-        datalist.append({"author": author,"storyid": storyid,"url": url, "about": about, "karma_score": karma_score, "author_created_at": author_created_at,"desecendants": desecendants, "kids": kids, "score": score, "title": title, "story_created_at": story_created_at, "text": text})
+    return list(users_by_name.values()), stories, comments
 
-    return datalist
-        
-
-def save_data_to_db(datalist):
+def save(users, stories, comments):
     with Session(engine) as session:
-        for data in datalist:    
-            user = User(name=data.get("author"), karma_score=data.get("karma_score"), about=data.get("about"),created_at=datetime.fromtimestamp(data.get("author_created_at"), tz=timezone.utc))
-            story = Story(id=data.get("storyid"), title=data.get("title"), author_name=data.get("author"), score=data.get("score"), descendants_count=data.get("desecendants"), created_at=datetime.fromtimestamp(data.get("story_created_at"), tz=timezone.utc))
-            session.add_all([user,story])
+        session.add_all(users + stories + comments)
         session.commit()
 
-datalist = get_data(5)
-
 if __name__ == "__main__":
-    save_data_to_db(datalist=datalist)
+    users, stories, comments = ingest(1)
+    print(f"Ingesting {len(users)} users, {len(stories)} stories, {len(comments)} comments.")
+    save(users=users, stories=stories, comments=comments)
+    print("Done.")
+
