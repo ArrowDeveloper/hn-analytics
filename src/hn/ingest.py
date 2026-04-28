@@ -4,6 +4,7 @@ from urllib3.util.retry import Retry
 from hn.model import User, Comment, Story, engine
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 retry_policy = Retry(total=3,backoff_factor=0.5,status_forcelist=[500,502,503,504],allowed_methods=["GET", "HEAD"])
 adapter = HTTPAdapter(max_retries=retry_policy)
@@ -131,9 +132,74 @@ def ingest(n:int):
 
     return list(users_by_name.values()), stories, comments
 
+def user_to_dict(user):
+    return {
+        "name": user.name,
+        "karma_score": user.karma_score,
+        "about": user.about,
+        "created_at": user.created_at,
+    }
+def story_to_dict(story):
+    return {
+        "id": story.id,
+        "title": story.title,
+        "author_name": story.author.name, 
+        "url": story.url,
+        "score": story.score,
+        "descendants_count": story.descendants_count,
+        "created_at": story.created_at,
+    }
+
+def comment_to_dict(comment):
+    return {
+        "id": comment.id,
+        "author_name": comment.author.name,
+        "story_id": comment.story_id,
+        "parent_comment": comment.parent.id if comment.parent else None,
+        "html": comment.html,
+        "created_at": comment.created_at,
+    }
+
+def upsert_users(session,users):
+    rows = [user_to_dict(u) for u in users]
+    stmt = pg_insert(User).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["name"],
+        set_={
+            "about": stmt.excluded.about,
+            "karma_score": stmt.excluded.karma_score
+        })
+
+    session.execute(stmt)
+
+def upsert_stories(session, stories):
+    rows = [story_to_dict(s) for s in stories]
+    stmt = pg_insert(Story).values(rows)
+    stmt = stmt.on_conflict_do_update(index_elements=["id"],
+        set_={
+            "score": stmt.excluded.score,
+            "descendants_count": stmt.excluded.descendants_count,
+            "title": stmt.excluded.title,
+            "url": stmt.excluded.url
+        })
+    
+    session.execute(stmt)
+
+def upsert_comments(session, comments):
+    rows = [comment_to_dict(c) for c in comments]
+    stmt = pg_insert(Comment).values(rows)
+    stmt = stmt.on_conflict_do_update(index_elements=["id"],
+        set_={
+            "html": stmt.excluded.html,
+        })
+    
+    session.execute(stmt)
+
 def save(users, stories, comments):
     with Session(engine) as session:
-        session.add_all(users + stories + comments)
+        upsert_users(session=session, users=users)
+        upsert_stories(session=session, stories=stories)
+        upsert_comments(session=session,comments=comments)
         session.commit()
 
 if __name__ == "__main__":
