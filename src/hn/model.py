@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 load_dotenv()
 
 ENGINE_URL = os.environ.get("ENGINE_URL")
+if not ENGINE_URL:
+    print("Set var in your .env file.")
 engine = create_engine(ENGINE_URL)
 
 class Base(DeclarativeBase):
