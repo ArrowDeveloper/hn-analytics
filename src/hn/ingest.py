@@ -5,6 +5,8 @@ from hn.model import User, Comment, Story, engine
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+import logging
+import argparse
 
 retry_policy = Retry(total=3,backoff_factor=0.5,status_forcelist=[500,502,503,504],allowed_methods=["GET", "HEAD"])
 adapter = HTTPAdapter(max_retries=retry_policy)
@@ -24,7 +26,6 @@ nsession = MakeSession()
 def get_story_ids():
     r = nsession.get("https://hacker-news.firebaseio.com/v0/topstories.json")
     storyids = r.json()
-
     return storyids
 
 def fetch_item(storyid):
@@ -33,7 +34,7 @@ def fetch_item(storyid):
 
     if itemjson is None or itemjson.get("deleted") or itemjson.get("dead"):
         return None
-
+    
     return itemjson
 
 def fetch_user_profile(name: str):
@@ -66,6 +67,7 @@ def recursive_comments(kid_ids,story_id,parent_comment,users_by_name, comments):
     for kid_id in kid_ids:
         comment = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{kid_id}.json")
         commentjson = comment.json()
+
         if commentjson is None or commentjson.get("deleted") or commentjson.get("dead"):
             continue
 
@@ -91,6 +93,7 @@ def recursive_comments(kid_ids,story_id,parent_comment,users_by_name, comments):
                 users_by_name=users_by_name,
                 comments=comments,
             )
+        logging.debug(f"Fetched comment id {kid_id}")
 
 def ingest(n:int):
     users_by_name = {}
@@ -107,6 +110,7 @@ def ingest(n:int):
             continue
 
         author = get_or_fetchuser(storyjson["by"], users_by_name)
+        logging.debug(f"Fetched User {n}")
         if author is None:
             continue
 
@@ -120,7 +124,7 @@ def ingest(n:int):
             created_at=datetime.fromtimestamp(storyjson["time"], tz=timezone.utc),
         )
         stories.append(story)
-
+        logging.debug(f"Fetched Story {n}")
         if storyjson.get("kids"):
             recursive_comments(
                 kid_ids=storyjson["kids"],
@@ -129,6 +133,7 @@ def ingest(n:int):
                 users_by_name=users_by_name,
                 comments=comments,
             )
+        
 
     return list(users_by_name.values()), stories, comments
 
@@ -203,8 +208,22 @@ def save(users, stories, comments):
         session.commit()
 
 if __name__ == "__main__":
-    users, stories, comments = ingest(1)
-    print(f"Ingesting {len(users)} users, {len(stories)} stories, {len(comments)} comments.")
+    Parser = argparse.ArgumentParser(usage="python -m hn.ingest <number of stories>")
+
+    Parser.add_argument("--verbose", action="store_true")
+    Parser.add_argument("n", type=int)
+    args = Parser.parse_args()
+
+    logger = logging.getLogger(__name__)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    users, stories, comments = ingest(args.n)
+    logger.info("Ingested %d users, %d stories, %d comments", len(users), len(stories), len(comments))
     save(users=users, stories=stories, comments=comments)
-    print("Done.")
+    logger.info("Completed.")
 
