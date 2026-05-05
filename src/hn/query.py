@@ -6,12 +6,16 @@ def get_top_stories(session):
     stmt = select(Story).order_by(Story.score.desc()).limit(10)
     return session.scalars(stmt).all()
 
-def get_authors_by_avg_score(session, min_stories: int=1):
+def get_authors_avg_stmt(min_stories: int = 1):
     stmt = (select(Story.author_name, func.avg(Story.score).label("avg_score"))
             .where(Story.score > 10)
             .group_by(Story.author_name)
             .having(func.count() >= min_stories)
     )
+    return stmt
+
+def get_authors_by_avg_score(session):
+    stmt = get_authors_avg_stmt()
     return session.execute(stmt).all()
 
 def stories_with_comments_count(session, limit: int=10):
