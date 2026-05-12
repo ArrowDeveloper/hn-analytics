@@ -1,57 +1,45 @@
-import requests 
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import httpx
+from httpx_retries import Retry, RetryTransport
+import asyncio
 from hn.model import User, Comment, Story, engine
-from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-import logging
-import argparse
+from sqlalchemy.orm import Session
+from time import perf_counter
 
-logger = logging.getLogger(__name__)
-retry_policy = Retry(total=3,backoff_factor=0.5,status_forcelist=[500,502,503,504],allowed_methods=["GET", "HEAD"])
-adapter = HTTPAdapter(max_retries=retry_policy)
+retry = Retry(total=5,backoff_factor=0.5)
+transport = RetryTransport(retry=retry)
 
-def MakeSession():
-    session = requests.Session()
-    session.mount("https://", adapter=adapter)
-    session.mount("http://", adapter=adapter)
-    session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
+async def fetch(url, client, sem):
+    async with sem:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.json()
 
-    return session
-
-nsession = MakeSession()
-
-def get_story_ids():
-    r = nsession.get("https://hacker-news.firebaseio.com/v0/topstories.json")
-    storyids = r.json()
+async def get_story_ids(client, sem):
+    storyids = await fetch(url="https://hacker-news.firebaseio.com/v0/topstories.json", client=client, sem=sem)
     return storyids
 
-def fetch_item(storyid):
-    item = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{storyid}.json")
-    itemjson = item.json()
+async def fetch_item(storyid, client, sem):
+    itemjson = await fetch(url=f"https://hacker-news.firebaseio.com/v0/item/{storyid}.json", client=client, sem=sem)
 
     if itemjson is None or itemjson.get("deleted") or itemjson.get("dead"):
         return None
     
     return itemjson
 
-def fetch_user_profile(name: str):
-    user = nsession.get(f"https://hacker-news.firebaseio.com/v0/user/{name}.json")
-    userjson = user.json()
-
+async def fetch_user_profile(name: str, client, sem):
+    userjson = await fetch(url=f"https://hacker-news.firebaseio.com/v0/user/{name}.json", client=client, sem=sem)
     if userjson is None:
         return None
-
+    
     return userjson
 
-def get_or_fetchuser(name, users_by_name):
+async def get_or_fetchuser(name, users_by_name, client, sem):
     if name in users_by_name:
         return users_by_name[name]
     
-    profile = fetch_user_profile(name=name)
+    profile = await fetch_user_profile(name=name, client=client, sem=sem)
     if profile is None:
         return None
     
@@ -64,58 +52,22 @@ def get_or_fetchuser(name, users_by_name):
     users_by_name[name] = user
     return user
 
-def recursive_comments(kid_ids,story_id,parent_comment,users_by_name, comments):
-    for kid_id in kid_ids:
-        comment = nsession.get(f"https://hacker-news.firebaseio.com/v0/item/{kid_id}.json")
-        commentjson = comment.json()
+async def process_story(sid, client, comments, users_by_name, sem):
+    storyjson = await fetch_item(storyid=sid, client=client, sem=sem)
 
-        if commentjson is None or commentjson.get("deleted") or commentjson.get("dead"):
-            continue
+    if storyjson is None:
+        return None
+    if storyjson.get("type") != "story":
+        return None
+    if not storyjson.get("by"):
+        return None
+    
+    author = await get_or_fetchuser(storyjson["by"], users_by_name=users_by_name, client=client, sem=sem)
 
-        author = get_or_fetchuser(commentjson.get("by"), users_by_name=users_by_name)
+    if author is None:
+        return None
 
-        if author is None:
-            continue
-
-        comment = Comment(
-            id=commentjson["id"],
-            author=author,
-            story_id=story_id,
-            parent=parent_comment,        
-            html=commentjson.get("text"),
-            created_at=datetime.fromtimestamp(commentjson["time"], tz=timezone.utc),
-        )
-        comments.append(comment)
-        if commentjson.get("kids"):
-            recursive_comments(
-                kid_ids=commentjson["kids"],
-                story_id=story_id,
-                parent_comment=comment,    
-                users_by_name=users_by_name,
-                comments=comments,
-            )
-        logger.debug(f"Fetched comment id {kid_id}")
-
-def ingest(n:int):
-    users_by_name = {}
-    stories = []
-    comments = []
-
-    for storyid in get_story_ids()[:n]:
-        storyjson = fetch_item(storyid=storyid)
-        if storyjson is None:
-            continue
-        if storyjson.get("type") != "story":
-            continue
-        if not storyjson.get("by"):
-            continue
-
-        author = get_or_fetchuser(storyjson["by"], users_by_name)
-        logger.debug(f"Fetched User {storyjson.get("by")}")
-        if author is None:
-            continue
-
-        story = Story(
+    story = Story(
             id=storyjson["id"],
             title=storyjson["title"],
             author=author,
@@ -124,20 +76,64 @@ def ingest(n:int):
             descendants_count=storyjson.get("descendants"),
             created_at=datetime.fromtimestamp(storyjson["time"], tz=timezone.utc),
         )
-        stories.append(story)
-        logger.debug(f"Fetched Story {storyjson["id"]}")
-        if storyjson.get("kids"):
-            recursive_comments(
-                kid_ids=storyjson["kids"],
+    
+    if storyjson.get("kids"):
+            await asyncio.gather(*(process_comment(
+                kid_id=k,
                 story_id=story.id,
                 parent_comment=None,        
                 users_by_name=users_by_name,
                 comments=comments,
-            )
-        
+                client=client,
+                sem=sem
+            )for k in storyjson["kids"]), return_exceptions=True)
+    
+    return story
+
+async def process_comment(kid_id, story_id, parent_comment, users_by_name, comments, client, sem):
+    commentjson = await fetch_item(storyid=kid_id, client=client, sem=sem)
+    if commentjson is None or commentjson.get("deleted") or commentjson.get("dead"):
+        return None
+    author = await get_or_fetchuser(commentjson.get("by"), users_by_name=users_by_name, client=client, sem=sem)
+    if author is None:
+        return None
+    
+    comment = Comment(
+        id=commentjson["id"],
+        author=author,
+        story_id=story_id,
+        parent=parent_comment,        
+        html=commentjson.get("text"),
+        created_at=datetime.fromtimestamp(commentjson["time"], tz=timezone.utc),
+    )
+    if commentjson.get("kids"):
+            await asyncio.gather(*(process_comment(
+                kid_id=k,
+                story_id=story_id,
+                parent_comment=comment,    
+                users_by_name=users_by_name,
+                comments=comments,
+                client=client,
+                sem=sem
+            )for k in commentjson["kids"]), return_exceptions=True)
+
+    comments.append(comment)
+
+    return comment
+
+async def ingest(n:int, client, sem):
+    users_by_name = {}
+    stories = []
+    comments = []
+    ids = (await get_story_ids(client=client, sem=sem))[:n]
+
+    results = await asyncio.gather(*(process_story(sid=id, client=client, comments=comments, users_by_name=users_by_name, sem=sem) for id in ids), return_exceptions=True)
+    for r in results:
+        if r is not None and not isinstance(r, Exception):
+            stories.append(r)
 
     return list(users_by_name.values()), stories, comments
-
+    
 def user_to_dict(user):
     return {
         "name": user.name,
@@ -145,6 +141,7 @@ def user_to_dict(user):
         "about": user.about,
         "created_at": user.created_at,
     }
+    
 def story_to_dict(story):
     return {
         "id": story.id,
@@ -208,23 +205,15 @@ def save(users, stories, comments):
         upsert_comments(session=session,comments=comments)
         session.commit()
 
+async def main():
+    sem = asyncio.Semaphore(20)
+    async with httpx.AsyncClient(transport=transport) as client:
+        users, stories, comments = await ingest(1, client=client, sem=sem)
+    #save(users=users, stories=stories, comments=comments)
+    print(len(users), len(stories), len(comments))
+
 if __name__ == "__main__":
-    Parser = argparse.ArgumentParser(usage="python -m hn.ingest <number of stories>")
-
-    Parser.add_argument("--verbose", action="store_true")
-    Parser.add_argument("no_of_ingestion", type=int)
-
-    args = Parser.parse_args()
-    n = args.no_of_ingestion
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    users, stories, comments = ingest(n)
-    logger.info("Ingested %d users, %d stories, %d comments", len(users), len(stories), len(comments))
-    save(users=users, stories=stories, comments=comments)
-    logger.info("Completed.")
-
+    start = perf_counter()
+    asyncio.run(main())
+    end = perf_counter()
+    print(end-start)
