@@ -56,7 +56,7 @@ The program fetches the top N stories from Hacker News Firebase API (`https://ha
 
 ## Usage
 
-Ingest the top 50 stories and their comment trees (It is not non-blocking so will take some time):
+Ingest the top 50 stories and their comment trees:
 
     python -m hn.ingest 50
 
@@ -73,6 +73,11 @@ Generate the average-score-per-author CSV report:
     python -m hn.report
 
 Output is saved in `reports/`.
+
+## Performance
+
+Uses concurrency with httpx and asyncio, with a 60% improvement of speed with Sephamore set to 20 and upto 85% with no limit set.
+Sequential ingest for 1 story yielded a time of approx. 20 seconds whereas current setup yeilds 8 seconds with limit and ~3-5 seconds without limit.
 
 ## Schema
 
@@ -100,5 +105,4 @@ converted from HN's Unix-second integers.
 ## Limitations / future work
 
 - No automated tests yet. Pytest will be added later on.
-- Sequential ingestion. Concurrent fetch is the next step.
 - Reports module currently has one report function; more functions will be added.
