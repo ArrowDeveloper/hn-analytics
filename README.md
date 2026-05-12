@@ -76,7 +76,7 @@ Output is saved in `reports/`.
 
 ## Performance
 
-Uses concurrency with httpx and asyncio, with a 60% improvement of speed with Sephamore set to 20 and upto 85% with no limit set.
+Uses concurrency with httpx and asyncio, with a 60% improvement of speed with Semaphore set to 20 and upto 85% with no limit set.
 Sequential ingest for 1 story yielded a time of approx. 20 seconds whereas current setup yeilds 8 seconds with limit and ~3-5 seconds without limit.
 
 ## Schema
