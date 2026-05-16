@@ -6,9 +6,33 @@ from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from time import perf_counter
+import structlog
+import tenacity
+import argparse
+import logging
 
-retry = Retry(total=5,backoff_factor=0.5)
+Parser = argparse.ArgumentParser(usage="python -m hn.ingest")
+Parser.add_argument("--verbose", action="store_true")
+Parser.add_argument("--semaphore", type=int, default=20)
+args = Parser.parse_args()
+retry = Retry(total=5,backoff_factor=0.5, status_forcelist=[500,502,503,504], allowed_methods=["GET", "HEAD"])
 transport = RetryTransport(retry=retry)
+logger = structlog.get_logger()
+debug = args.verbose
+semaphore = args.semaphore
+
+def setup_logging(log_level: str = "DEBUG" if debug else "INFO"):
+    logging.basicConfig(
+        level=log_level,
+        format="%(message)s"
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    structlog.configure(
+        processors=[
+        structlog.dev.ConsoleRenderer(pad_event=0)
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelNamesMapping()[log_level])
+    )
 
 async def fetch(url, client, sem):
     async with sem:
@@ -53,6 +77,8 @@ async def get_or_fetchuser(name, users_by_name, client, sem):
     return user
 
 async def process_story(sid, client, comments, users_by_name, sem):
+    log = logger.bind(story_id=sid)
+    await log.ainfo("processing_story...")
     storyjson = await fetch_item(storyid=sid, client=client, sem=sem)
 
     if storyjson is None:
@@ -87,6 +113,8 @@ async def process_story(sid, client, comments, users_by_name, sem):
                 client=client,
                 sem=sem
             )for k in storyjson["kids"]), return_exceptions=True)
+    
+    await log.ainfo("story fetched", comment_count=len(storyjson["kids"]))
     
     return story
 
@@ -206,13 +234,15 @@ def save(users, stories, comments):
         session.commit()
 
 async def main():
-    sem = asyncio.Semaphore(20)
+    setup_logging()
+    sem = asyncio.Semaphore(semaphore)
     async with httpx.AsyncClient(transport=transport) as client:
-        users, stories, comments = await ingest(1, client=client, sem=sem)
+        users, stories, comments = await ingest(5, client=client, sem=sem)
     #save(users=users, stories=stories, comments=comments)
-    print(len(users), len(stories), len(comments))
+    await logger.ainfo("Logged", users=len(users), stories=len(stories), comments=len(comments))
 
 if __name__ == "__main__":
+    
     start = perf_counter()
     asyncio.run(main())
     end = perf_counter()
