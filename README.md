@@ -18,7 +18,9 @@ The program fetches the top N stories from Hacker News Firebase API (`https://ha
 - SQLAlchemy 2.0 (ORM with Mapped / mapped_column / DeclarativeBase)
 - psycopg v3
 - pandas
-- requests
+- httpx
+- tenacity
+- structlog
 
 ## Project layout
 
@@ -58,11 +60,15 @@ The program fetches the top N stories from Hacker News Firebase API (`https://ha
 
 Ingest the top 50 stories and their comment trees:
 
-    python -m hn.ingest 50
+    python -m hn.ingest --limit 50
 
 Verbose mode for debug logging:
 
-    python -m hn.ingest 50 --verbose
+    python -m hn.ingest --limit 50 --verbose
+
+Custom semaphore numbers:
+
+    python -m hn.ingest --semaphore 50
 
 Run analytical queries (currently only the functions are created and needs manual tinkering for use):
 
@@ -76,8 +82,9 @@ Output is saved in `reports/`.
 
 ## Performance
 
-Uses concurrency with httpx and asyncio, with a 60% improvement of speed with Semaphore set to 20 and upto 85% with no limit set.
-Sequential ingest for 1 story yielded a time of approx. 20 seconds whereas current setup yeilds 8 seconds with limit and ~3-5 seconds without limit.
+Uses concurrency with httpx and asyncio, massive improvements on speed due to parallel running.
+Sequential: ~8-15s per story (estimated 40-75s for 5 stories)
+Concurrent: ~8-15s for N stories regardless of N
 
 ## Schema
 
@@ -95,10 +102,8 @@ converted from HN's Unix-second integers.
 ## Notes on implementation
 
 - Upserts use Postgres's `INSERT ... ON CONFLICT DO UPDATE` via SQLAlchemy's `pg_insert`.
-- Comment fetching is currently sequential and is the main bottleneck for
-  large N. Concurrent ingestion (asyncio + httpx) is planned.
-- HTTP retries use `requests` + `urllib3.Retry` with backoff on
-  5xx responses.
+- HTTP retries use tenacity with @retry decorator
+  with backoff on 5xx and 429 responses.
 - Logging is configured at the entry point; modules use
   `logging.getLogger(__name__)` and emit at INFO/DEBUG levels.
 
