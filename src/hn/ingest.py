@@ -1,5 +1,4 @@
 import httpx
-from httpx_retries import Retry, RetryTransport
 import asyncio
 from hn.model import User, Comment, Story, engine
 from datetime import datetime, timezone
@@ -7,16 +6,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from time import perf_counter
 import structlog
-import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 import argparse
 import logging
+import uuid
 
 Parser = argparse.ArgumentParser(usage="python -m hn.ingest")
 Parser.add_argument("--verbose", action="store_true")
 Parser.add_argument("--semaphore", type=int, default=20)
 args = Parser.parse_args()
-retry = Retry(total=5,backoff_factor=0.5, status_forcelist=[500,502,503,504], allowed_methods=["GET", "HEAD"])
-transport = RetryTransport(retry=retry)
 logger = structlog.get_logger()
 debug = args.verbose
 semaphore = args.semaphore
@@ -29,11 +27,25 @@ def setup_logging(log_level: str = "DEBUG" if debug else "INFO"):
     logging.getLogger("httpx").setLevel(logging.WARNING)
     structlog.configure(
         processors=[
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
+        structlog.stdlib.add_log_level,
         structlog.dev.ConsoleRenderer(pad_event=0)
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelNamesMapping()[log_level])
     )
 
+def is_retryable(exc):
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 502,503,504)
+    if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout)):
+        return True
+    return False
+
+@retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception(is_retryable)
+)
 async def fetch(url, client, sem):
     async with sem:
         r = await client.get(url)
@@ -113,8 +125,10 @@ async def process_story(sid, client, comments, users_by_name, sem):
                 client=client,
                 sem=sem
             )for k in storyjson["kids"]), return_exceptions=True)
-    
-    await log.ainfo("story fetched", comment_count=len(storyjson["kids"]))
+
+    comment_count = len(storyjson.get("kids")) or 0
+
+    await log.ainfo("story fetched", comment_count=comment_count)
     
     return story
 
@@ -153,14 +167,17 @@ async def ingest(n:int, client, sem):
     users_by_name = {}
     stories = []
     comments = []
+    errors = 0
     ids = (await get_story_ids(client=client, sem=sem))[:n]
 
     results = await asyncio.gather(*(process_story(sid=id, client=client, comments=comments, users_by_name=users_by_name, sem=sem) for id in ids), return_exceptions=True)
     for r in results:
         if r is not None and not isinstance(r, Exception):
             stories.append(r)
+        if isinstance(r, Exception):
+            errors += 1
 
-    return list(users_by_name.values()), stories, comments
+    return list(users_by_name.values()), stories, comments, errors
     
 def user_to_dict(user):
     return {
@@ -235,11 +252,13 @@ def save(users, stories, comments):
 
 async def main():
     setup_logging()
+    run_log = logger.bind(run_id=str(uuid.uuid4())[:8])
     sem = asyncio.Semaphore(semaphore)
-    async with httpx.AsyncClient(transport=transport) as client:
-        users, stories, comments = await ingest(5, client=client, sem=sem)
+    async with httpx.AsyncClient() as client:
+        users, stories, comments, errors = await ingest(5, client=client, sem=sem)
     #save(users=users, stories=stories, comments=comments)
-    await logger.ainfo("Logged", users=len(users), stories=len(stories), comments=len(comments))
+    await run_log.ainfo("Logged", users=len(users), stories=len(stories), comments=len(comments))
+    await run_log.ainfo("Errors", errors=errors)
 
 if __name__ == "__main__":
     
