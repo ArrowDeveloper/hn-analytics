@@ -14,10 +14,12 @@ import uuid
 Parser = argparse.ArgumentParser(usage="python -m hn.ingest")
 Parser.add_argument("--verbose", action="store_true")
 Parser.add_argument("--semaphore", type=int, default=20)
+Parser.add_argument("--limit", type=int, default=5)
 args = Parser.parse_args()
 logger = structlog.get_logger()
 debug = args.verbose
 semaphore = args.semaphore
+limit = args.limit
 
 def setup_logging(log_level: str = "DEBUG" if debug else "INFO"):
     logging.basicConfig(
@@ -255,7 +257,7 @@ async def main():
     run_log = logger.bind(run_id=str(uuid.uuid4())[:8])
     sem = asyncio.Semaphore(semaphore)
     async with httpx.AsyncClient() as client:
-        users, stories, comments, errors = await ingest(5, client=client, sem=sem)
+        users, stories, comments, errors = await ingest(limit, client=client, sem=sem)
     #save(users=users, stories=stories, comments=comments)
     await run_log.ainfo("Logged", users=len(users), stories=len(stories), comments=len(comments))
     await run_log.ainfo("Errors", errors=errors)
