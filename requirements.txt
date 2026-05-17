@@ -2,4 +2,6 @@ psycopg[binary]
 python-dotenv
 sqlalchemy
 pandas
-requests
+httpx
+tenacity
+structlog
