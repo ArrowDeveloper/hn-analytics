@@ -11,17 +11,16 @@ import argparse
 import logging
 import uuid
 
-Parser = argparse.ArgumentParser(usage="python -m hn.ingest")
-Parser.add_argument("--verbose", action="store_true")
-Parser.add_argument("--semaphore", type=int, default=20)
-Parser.add_argument("--limit", type=int, default=5)
-args = Parser.parse_args()
 logger = structlog.get_logger()
-debug = args.verbose
-semaphore = args.semaphore
-limit = args.limit
 
-def setup_logging(log_level: str = "DEBUG" if debug else "INFO"):
+def argument_parser():
+    Parser = argparse.ArgumentParser(usage="python -m hn.ingest")
+    Parser.add_argument("--verbose", action="store_true")
+    Parser.add_argument("--semaphore", type=int, default=20)
+    Parser.add_argument("--limit", type=int, default=5)
+    return Parser.parse_args()
+
+def setup_logging(log_level):
     logging.basicConfig(
         level=log_level,
         format="%(message)s"
@@ -253,12 +252,13 @@ def save(users, stories, comments):
         session.commit()
 
 async def main():
-    setup_logging()
+    args = argument_parser()
+    setup_logging("DEBUG" if args.verbose else "INFO")
     run_log = logger.bind(run_id=str(uuid.uuid4())[:8])
-    sem = asyncio.Semaphore(semaphore)
+    sem = asyncio.Semaphore(args.semaphore)
     async with httpx.AsyncClient() as client:
-        users, stories, comments, errors = await ingest(limit, client=client, sem=sem)
-    #save(users=users, stories=stories, comments=comments)
+        users, stories, comments, errors = await ingest(args.limit, client=client, sem=sem)
+    save(users=users, stories=stories, comments=comments)
     await run_log.ainfo("Logged", users=len(users), stories=len(stories), comments=len(comments))
     await run_log.ainfo("Errors", errors=errors)
 
