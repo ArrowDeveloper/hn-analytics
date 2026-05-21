@@ -5,3 +5,7 @@ pandas
 httpx
 tenacity
 structlog
+pytest
+respx
+pytest-asyncio
+pytest-cov

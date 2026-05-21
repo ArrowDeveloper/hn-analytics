@@ -16,5 +16,13 @@ dependencies = [
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["integration: tests requiring a real database"]
+
+[project.optional-dependencies]
+test = ["pytest", "respx", "pytest-asyncio", "pytest-cov"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
