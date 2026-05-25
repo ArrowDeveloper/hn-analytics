@@ -62,7 +62,6 @@ async def fetch_item(storyid, client, sem):
 
     if itemjson is None or itemjson.get("deleted") or itemjson.get("dead"):
         return None
-    
     return itemjson
 
 async def fetch_user_profile(name: str, client, sem):
