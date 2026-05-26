@@ -1,13 +1,20 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from hn.model import engine, User, Story, Comment
+from hn.model import engine, User, Story, Comment, init_db
 from pydantic import BaseModel
 from datetime import datetime
-from hn.ingest import ingest
+from hn.ingest import ingest, save
 from httpx import AsyncClient
 from asyncio import Semaphore
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 class StoryResponse(BaseModel):
     id: int
@@ -59,7 +66,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/stories/{story_id}", response_model=StoryResponse)
-def list_stories(story_id:int, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
+def list_story(story_id:int, db: Session = Depends(get_db)):
     story = db.get(Story, story_id)
     if story is None:
         raise HTTPException(status_code=404, detail="Story not found")
@@ -73,7 +80,7 @@ def list_comments(comment_id: int, db: Session = Depends(get_db)):
     return comment
 
 @app.get("/users/{username}", response_model=UserResponse)
-def list_comments(username: str, db: Session = Depends(get_db)):
+def list_usernames(username: str, db: Session = Depends(get_db)):
     user = db.get(User, username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -84,4 +91,5 @@ async def ingeststuff(req: IngestRequest):
     sem = Semaphore(req.semaphore)
     async with AsyncClient() as client:
         users, stories, comments, errors = await ingest(n=req.limit, sem=sem, client=client)
+    save(users=users, stories=stories, comments=comments)
     return {"userscount": len(users), "storiescount": len(stories), "commentscount": len(comments)}
