@@ -9,7 +9,9 @@ dependencies = [
     "python-dotenv",
     "pandas",
     "structlog",
-    "tenacity"
+    "tenacity",
+    "fastapi",
+    "uvicorn"
 ]
 
 [build-system]
