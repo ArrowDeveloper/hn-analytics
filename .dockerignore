@@ -1,0 +1,29 @@
+# Virtual environment — never copy this, always install fresh inside the image
+.venv
+venv
+
+# Python cache — not needed, wastes space
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Git — not needed in the image
+.git
+.gitignore
+
+# Test artifacts
+.coverage
+htmlcov/
+dist/
+*.egg-info/
+
+# Secrets — never bake .env into an image
+# Pass secrets via environment variables at runtime
+.env
+.env.*
+
+# Editor/OS noise
+.DS_Store
+.vscode/
+*.swp
